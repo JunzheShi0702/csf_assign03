@@ -16,9 +16,18 @@ struct CacheSet
   std::vector<CacheBlock> cacheSet;
 };
 
+void handleSingleLoad(const std::string address,                           //   address passed as string
+                      std::vector<CacheSet> &cache,                        // cache passed by reference
+                      int sets, int blocks, int block_size,                // cache parameters
+                      int *load_hits, int *load_misses, int *total_cycles, // output stats passed by pointer
+                      const std::string replacement_policy                 // replacement policy by reference
+);
+
+u_int32_t getIndex(const u_int32_t address, const int index_bits, const int block_offset_bits);
+u_int32_t getTag(const u_int32_t address, const int index_bits, const int block_offset_bits);
+
 int main(int argc, char **argv)
 {
-  // TODO: implement
   // ################ BASIC SETUP AND INPUT VALIDATION ####################
 
   // parameter format:
@@ -123,6 +132,24 @@ int main(int argc, char **argv)
   // currently most understandable way is nested vector
   std::vector<CacheSet> cache(sets);
 
+  // Initialize cache sets and blocks
+  for (int i = 0; i < sets; i++)
+  {
+    cache[i].cacheSet.resize(blocks); // Set size of each set to number of blocks
+    for (int j = 0; j < blocks; j++)
+    {
+      cache[i].cacheSet[j].valid = false;
+      cache[i].cacheSet[j].dirty = false; // only for write
+      cache[i].cacheSet[j].order = 0;
+      cache[i].cacheSet[j].tag = 0;
+    }
+  }
+
+  // get number of bits for each part
+  int index_bits = log2(sets);
+  int block_offset_bits = log2(block_size);
+  int tag_bits = 32 - index_bits - block_offset_bits;
+
   std::string op_string;
   char operation;
   std::string address; // int/string?
@@ -141,9 +168,15 @@ int main(int argc, char **argv)
     // operation string check, this determines the following logic
     if (operation == 's') // could only be s or l
     {
+      // TODO by Albert Wang
     }
     else // operation is l
     {
+      // TODO by Junzhe Shi
+      total_loads++;
+      handleSingleLoad(address, cache, sets, blocks, block_size,
+                       &load_hits, &load_misses, &total_cycles,
+                       replacement_policy);
     }
   }
 
@@ -160,29 +193,14 @@ int main(int argc, char **argv)
   return 0;
 }
 
+u_int32_t getIndex(const u_int32_t address, const int index_bits, const int block_offset_bits)
+{
+}
 // Detailed Explanation for HIT OTHERS for LRU in Lecture 16: Increment counter below the original slot order value, then set the hit slot to 00.
 
 // Actual implementation: only Hit and Miss two cases, for every hit no matter it is LRU, MRU or not, you can always do check things below and increment them, then set back to 0
 
 // 0 - MRU, 3 - LRU
-
-/*
-number of sets in the cache (a positive power-of-2), calculate the number of bits for index calulcating the exponent
-number of blocks in each set (a positive power-of-2)
-number of bytes in each block (a positive power-of-2, at least 4)
-
-Example:
-./csim 256 4 16 write-allocate write-back lru < sometracefile
-number of bits for index = 8 (since 2^8 = 256)
-number of cacheBlock in each cacheSet = 4
-number of bytes in each block(16) determines the total cache size = 4 * 256 * 16 = 16384 bytes
-
-This would simulate a cache with 256 sets of 4 blocks each (aka a 4-way set-associative cache),
-with each block containing 16 bytes of memory; the cache performs write-allocate but no write-through
-(so it does write-back instead), and it evicts the least-recently-used block if it has to.
-(As an aside, note that this cache has a total size of 16384 bytes (16 kB) if we ignore the space
-needed for tags and other meta-information.)
-*/
 
 // Workflow notes - demo
 
@@ -197,7 +215,12 @@ needed for tags and other meta-information.)
 // 4. if does not exists, then check full or not （traverse to check number of valid blocks < total number of blocks）
 // 5. if not full, set the empty block with current data, and valid token to true, update its order to 0 and also update other block's order(e.g. +1)
 // 6. if full do lru replacement (FIFO for MS3) (replace the tag in the evicted CacheBlock) then update its order to 0 and also update other block's order
-
+void handleSingleLoad(const std::string address, std::vector<CacheSet> &cache,
+                      int sets, int blocks, int block_size,
+                      int *load_hits, int *load_misses, int *total_cycles,
+                      const std::string replacement_policy)
+{
+}
 // Store:
 // 1. parse the input to get address
 // 2. go to the set under that index
