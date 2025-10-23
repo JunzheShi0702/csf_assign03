@@ -166,16 +166,37 @@ int main(int argc, char **argv)
 
 // 0 - MRU, 3 - LRU
 
+/*
+number of sets in the cache (a positive power-of-2), calculate the number of bits for index calulcating the exponent
+number of blocks in each set (a positive power-of-2)
+number of bytes in each block (a positive power-of-2, at least 4)
+
+Example:
+./csim 256 4 16 write-allocate write-back lru < sometracefile
+number of bits for index = 8 (since 2^8 = 256)
+number of cacheBlock in each cacheSet = 4
+number of bytes in each block(16) determines the total cache size = 4 * 256 * 16 = 16384 bytes
+
+This would simulate a cache with 256 sets of 4 blocks each (aka a 4-way set-associative cache),
+with each block containing 16 bytes of memory; the cache performs write-allocate but no write-through
+(so it does write-back instead), and it evicts the least-recently-used block if it has to.
+(As an aside, note that this cache has a total size of 16384 bytes (16 kB) if we ignore the space
+needed for tags and other meta-information.)
+*/
+
 // Workflow notes - demo
+
+// check command line valid or not (e.g. write-back + no-write-allocate combo is invalid)
+
 // Load:
 // 1. parse the input to get address
 // 2. go to the set under that index
 // 3. check whether tag exists by iterate through blocks in the set
-//  3.1 exists then hit, update statistics (cycle + 1, hit + 1), update the order
+//  3.1 exists then hit, update statistics (cycle + 1, hit + 1), update the order depends on fifo or LRU
 //  3.2 does not exist, then miss (miss + 1, cycle + 100 * (block_size/4) + 1)
-// 4. if does not exists, then check full or not （traverse to check length < blocks）
-// 5. if not full, set the empty block with current data, and valid token to true, update order (current length + 1)
-// 6. if full do lru replacement (FIFO for MS3) (new CacheBlock declared and replaced) then update order
+// 4. if does not exists, then check full or not （traverse to check number of valid blocks < total number of blocks）
+// 5. if not full, set the empty block with current data, and valid token to true, update its order to 0 and also update other block's order(e.g. +1)
+// 6. if full do lru replacement (FIFO for MS3) (replace the tag in the evicted CacheBlock) then update its order to 0 and also update other block's order
 
 // Store:
 // 1. parse the input to get address
@@ -184,6 +205,9 @@ int main(int argc, char **argv)
 //  3.1 exists then hit, update statistics (cycle + 1, hit + 1), update the order
 //    - Write-Through: Write to cache + write to memory (+ 100 * (block_size/4) cycles)
 //    - Write-Back: Write to cache only, mark dirty (+0 extra cycles)
+//    - update the order of every block depends on fifo or LRU
 //  3.2 does not exist, then miss (miss + 1, cycle + 100 * (block_size/4) + 1)
-//    - Write-Allocate: Bring block into cache, then proceed to step 3.1
-//    - No-Write-Allocate: Write directly to memory, STOP (skip step 3.1)
+//    - Write-Allocate: Bring block into cache
+//        - if set is not full, update an empty block's tag and update its order to 0 and also update other block's order
+//        - if set is full, decide which block to evict based on replacement policy, update the evicted block's tag and update its order to 0 and also update other block's order
+//    - No-Write-Allocate: just add the cycled and skip the rest of the operations
