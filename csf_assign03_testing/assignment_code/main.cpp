@@ -1,13 +1,14 @@
 #include <iostream>
 #include <vector>
+#include <cmath>
 
 // Single cache block
 struct CacheBlock
 {
   u_int32_t tag;
   bool valid;
-  bool dirty;      // for write-back policy specifically
-  u_int32_t order; // for LRU/FIFO, since no bit shift is allowed we need to use actual time stamp
+  bool dirty; // for write-back policy specifically
+  int order;
 };
 
 // Set of blocks
@@ -16,7 +17,8 @@ struct CacheSet
   std::vector<CacheBlock> cacheSet;
 };
 
-void handleSingleLoad(const std::string address,                           //   address passed as string
+void handleSingleLoad(u_int32_t set_index,                                 // set index from address
+                      u_int32_t tag,                                       // tag from address
                       std::vector<CacheSet> &cache,                        // cache passed by reference
                       int sets, int blocks, int block_size,                // cache parameters
                       int *load_hits, int *load_misses, int *total_cycles, // output stats passed by pointer
@@ -145,11 +147,6 @@ int main(int argc, char **argv)
     }
   }
 
-  // get number of bits for each part
-  int index_bits = log2(sets);
-  int block_offset_bits = log2(block_size);
-  int tag_bits = 32 - index_bits - block_offset_bits;
-
   std::string op_string;
   char operation;
   std::string address; // int/string?
@@ -165,6 +162,14 @@ int main(int argc, char **argv)
     operation = op_string[0];
     address = op_string.substr(first_space + 1, second_space - first_space - 1);
 
+    const u_int32_t addr = std::stoul(address, nullptr, 16); // convert string address to u_int32_t
+
+    // get number of bits for each part
+    int index_bits = (int)log2(sets);
+    int block_offset_bits = (int)log2(block_size);
+    const u_int32_t tag = getTag(addr, index_bits, block_offset_bits);
+    const u_int32_t set_index = getIndex(addr, index_bits, block_offset_bits);
+
     // operation string check, this determines the following logic
     if (operation == 's') // could only be s or l
     {
@@ -174,7 +179,7 @@ int main(int argc, char **argv)
     {
       // TODO by Junzhe Shi
       total_loads++;
-      handleSingleLoad(address, cache, sets, blocks, block_size,
+      handleSingleLoad(set_index, tag, cache, sets, blocks, block_size,
                        &load_hits, &load_misses, &total_cycles,
                        replacement_policy);
     }
@@ -195,8 +200,14 @@ int main(int argc, char **argv)
 
 u_int32_t getIndex(const u_int32_t address, const int index_bits, const int block_offset_bits)
 {
+  u_int32_t index_mask = (1 << index_bits) - 1;
+  return (address >> block_offset_bits) & index_mask;
 }
-// Detailed Explanation for HIT OTHERS for LRU in Lecture 16: Increment counter below the original slot order value, then set the hit slot to 00.
+
+u_int32_t getTag(const u_int32_t address, const int index_bits, const int block_offset_bits)
+{
+  return address >> (index_bits + block_offset_bits);
+}
 
 // Actual implementation: only Hit and Miss two cases, for every hit no matter it is LRU, MRU or not, you can always do check things below and increment them, then set back to 0
 
@@ -215,11 +226,94 @@ u_int32_t getIndex(const u_int32_t address, const int index_bits, const int bloc
 // 4. if does not exists, then check full or not （traverse to check number of valid blocks < total number of blocks）
 // 5. if not full, set the empty block with current data, and valid token to true, update its order to 0 and also update other block's order(e.g. +1)
 // 6. if full do lru replacement (FIFO for MS3) (replace the tag in the evicted CacheBlock) then update its order to 0 and also update other block's order
-void handleSingleLoad(const std::string address, std::vector<CacheSet> &cache,
+void handleSingleLoad(u_int32_t set_index, u_int32_t tag,
+                      std::vector<CacheSet> &cache,
                       int sets, int blocks, int block_size,
                       int *load_hits, int *load_misses, int *total_cycles,
                       const std::string replacement_policy)
 {
+  bool exist = false;
+  CacheSet &current_set = cache[set_index];
+  for (int i = 0; i < blocks; i++)
+  {
+    if (current_set.cacheSet[i].tag == tag && current_set.cacheSet[i].valid)
+    {
+      exist = true;      // exist then hit, and set to true for skipping miss replacement
+      (*load_hits)++;    // cache hit
+      (*total_cycles)++; // 1 cycle for hit
+      // update the order depends on fifo or LRU
+      if (replacement_policy == "lru")
+      {
+        current_set.cacheSet[i].order = 0;
+        for (int j = 0; j < blocks; j++)
+        {
+          if (j != i && current_set.cacheSet[j].valid)
+          {
+            current_set.cacheSet[j].order++;
+          }
+        }
+      }
+      break; // Exit loop after finding hit
+    }
+  }
+  if (exist == false)
+  {
+    (*load_misses)++;                              // cache miss
+    (*total_cycles) += 100 * (block_size / 4) + 1; // need memory access so 100 * (block_size/4) + 1 cycles
+
+    // check full or not
+    bool is_full = true;
+    for (int i = 0; i < blocks; i++)
+    {
+      if (current_set.cacheSet[i].valid == false)
+      {
+        // not full, use this block
+        is_full = false;
+        current_set.cacheSet[i].tag = tag;
+        current_set.cacheSet[i].valid = true;
+        current_set.cacheSet[i].order = 0; // set order to 0 as latest
+        for (int j = 0; j < blocks; j++)
+        {
+          if (j != i && current_set.cacheSet[j].valid)
+          {
+            current_set.cacheSet[j].order++;
+          }
+        }
+        break; // Exit loop after finding empty block
+      }
+    }
+
+    if (is_full)
+    {
+      // full, need to evict one block based on replacement policy
+      int evict_index = 0;
+      if (replacement_policy == "lru")
+      {
+        int max_order = -1;
+        for (int i = 0; i < blocks; i++)
+        {
+          if (current_set.cacheSet[i].order > max_order)
+          {
+            max_order = current_set.cacheSet[i].order;
+            evict_index = i;
+          }
+        }
+      }
+
+      // replace the evicted block
+      current_set.cacheSet[evict_index].tag = tag;
+      current_set.cacheSet[evict_index].order = 0;
+
+      // update other block's order
+      for (int j = 0; j < blocks; j++)
+      {
+        if (j != evict_index && current_set.cacheSet[j].valid)
+        {
+          current_set.cacheSet[j].order++;
+        }
+      }
+    }
+  }
 }
 // Store:
 // 1. parse the input to get address
