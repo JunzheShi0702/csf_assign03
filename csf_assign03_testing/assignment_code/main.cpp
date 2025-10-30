@@ -25,6 +25,16 @@ void handleSingleLoad(u_int32_t set_index,                                 // se
                       const std::string replacement_policy                 // replacement policy by reference
 );
 
+void handleSingleStore(u_int32_t set_index,                                   // set index from address
+                       u_int32_t tag,                                         // tag from address
+                       std::vector<CacheSet> &cache,                          // cache passed by reference
+                       int sets, int blocks, int block_size,                  // cache parameters
+                       int *store_hits, int *store_misses, int *total_cycles, // output stats passed by pointer
+                       const std::string replacement_policy,                  // replacement policy
+                       const std::string write_alloc,                         // write allocation policy
+                       const std::string write_policy                         // write policy
+);
+
 u_int32_t getIndex(const u_int32_t address, const int index_bits, const int block_offset_bits);
 u_int32_t getTag(const u_int32_t address, const int index_bits, const int block_offset_bits);
 
@@ -173,7 +183,10 @@ int main(int argc, char **argv)
     // operation string check, this determines the following logic
     if (operation == 's') // could only be s or l
     {
-      // TODO by Albert Wang
+      total_stores++;
+      handleSingleStore(set_index, tag, cache, sets, blocks, block_size,
+                        &store_hits, &store_misses, &total_cycles,
+                        replacement_policy, write_alloc, write_policy);
     }
     else // operation is l
     {
@@ -198,6 +211,7 @@ int main(int argc, char **argv)
   return 0;
 }
 
+// Helper functions to extract index and tag from address
 u_int32_t getIndex(const u_int32_t address, const int index_bits, const int block_offset_bits)
 {
   u_int32_t index_mask = (1 << index_bits) - 1;
@@ -259,7 +273,7 @@ void handleSingleLoad(u_int32_t set_index, u_int32_t tag,
   if (exist == false)
   {
     (*load_misses)++;                              // cache miss
-    (*total_cycles) += 100 * (block_size / 4) + 1; // need memory access so 100 * (block_size/4) + 1 cycles
+    (*total_cycles) += 100 * (block_size / 4) + 1; // need memory access to load entire block + 1 cycle
 
     // check full or not
     bool is_full = true;
@@ -300,9 +314,16 @@ void handleSingleLoad(u_int32_t set_index, u_int32_t tag,
         }
       }
 
+      // if evicted block is dirty (write-back), add write-back penalty
+      if (current_set.cacheSet[evict_index].dirty)
+      {
+        (*total_cycles) += 100 * (block_size / 4); // write entire dirty block back to memory
+      }
+
       // replace the evicted block
       current_set.cacheSet[evict_index].tag = tag;
       current_set.cacheSet[evict_index].order = 0;
+      current_set.cacheSet[evict_index].dirty = false; // load doesn't make it dirty
 
       // update other block's order
       for (int j = 0; j < blocks; j++)
@@ -328,3 +349,153 @@ void handleSingleLoad(u_int32_t set_index, u_int32_t tag,
 //        - if set is not full, update an empty block's tag and update its order to 0 and also update other block's order
 //        - if set is full, decide which block to evict based on replacement policy, update the evicted block's tag and update its order to 0 and also update other block's order
 //    - No-Write-Allocate: just add the cycled and skip the rest of the operations
+void handleSingleStore(u_int32_t set_index, u_int32_t tag,
+                       std::vector<CacheSet> &cache,
+                       int sets, int blocks, int block_size,
+                       int *store_hits, int *store_misses, int *total_cycles,
+                       const std::string replacement_policy,
+                       const std::string write_alloc,
+                       const std::string write_policy)
+{
+  bool exist = false;
+  CacheSet &current_set = cache[set_index];
+
+  // check if tag exists in the set
+  for (int i = 0; i < blocks; i++)
+  {
+
+    if (current_set.cacheSet[i].tag == tag && current_set.cacheSet[i].valid)
+    {
+      exist = true; // store hit
+      (*store_hits)++;
+      (*total_cycles)++; // 1 cycle for cache access
+
+      // handle write policy
+      if (write_policy == "write-through")
+      {
+        // write to cache + write to memory
+        (*total_cycles) += 100; // 4 bytes max per access
+      }
+      else
+      {
+        // write to cache only, mark dirty
+        current_set.cacheSet[i].dirty = true;
+      }
+
+      // update order for LRU (same as load)
+      if (replacement_policy == "lru")
+      {
+        current_set.cacheSet[i].order = 0;
+        for (int j = 0; j < blocks; j++)
+        {
+          if (j != i && current_set.cacheSet[j].valid)
+          {
+            current_set.cacheSet[j].order++;
+          }
+        }
+      }
+      break; // exit loop after finding hit
+    }
+  }
+
+  // store miss
+  if (exist == false)
+  {
+    (*store_misses)++;
+
+    // for write-allocate: bring block into cache
+    if (write_alloc == "write-allocate")
+    {
+      (*total_cycles) += 100 * (block_size / 4); // need memory access to bring entire block in
+
+      // check if set is full
+      bool is_full = true;
+      for (int i = 0; i < blocks; i++)
+      {
+        if (current_set.cacheSet[i].valid == false)
+        {
+          // not full, use this block
+          is_full = false;
+          current_set.cacheSet[i].tag = tag;
+          current_set.cacheSet[i].valid = true;
+          current_set.cacheSet[i].order = 0;
+
+          // set dirty if write-back and add cycle for write
+          if (write_policy == "write-back")
+          {
+            current_set.cacheSet[i].dirty = true;
+            (*total_cycles) += 1; // write to cache
+          }
+          else
+          {
+            (*total_cycles) += 1 + 100; // write-through: write to cache + memory (4 bytes max)
+          }
+
+          // Update other blocks order
+          for (int j = 0; j < blocks; j++)
+          {
+            if (j != i && current_set.cacheSet[j].valid)
+            {
+              current_set.cacheSet[j].order++;
+            }
+          }
+          break; // exit loop after finding empty block
+        }
+      }
+
+      // set is full, need to evict
+      if (is_full)
+      {
+        int evict_index = 0;
+        if (replacement_policy == "lru")
+        {
+          int max_order = -1;
+          for (int i = 0; i < blocks; i++)
+          {
+            if (current_set.cacheSet[i].order > max_order)
+            {
+              max_order = current_set.cacheSet[i].order;
+              evict_index = i;
+            }
+          }
+        }
+
+        // if evicted block is dirty (write-back), add write-back penalty
+        if (write_policy == "write-back" && current_set.cacheSet[evict_index].dirty)
+        {
+          (*total_cycles) += 100 * (block_size / 4); // write entire dirty block back to memory
+        }
+
+        // replace the evicted block
+        current_set.cacheSet[evict_index].tag = tag;
+        current_set.cacheSet[evict_index].order = 0;
+        current_set.cacheSet[evict_index].dirty = (write_policy == "write-back");
+
+        // add cycle for write after bringing block in
+        if (write_policy == "write-back")
+        {
+          (*total_cycles) += 1; // write to cache
+        }
+        else
+        {
+          (*total_cycles) += 1 + 100; // write-through: write to cache + memory (4 bytes max)
+        }
+
+        // update other blocks' order
+        for (int j = 0; j < blocks; j++)
+        {
+          if (j != evict_index && current_set.cacheSet[j].valid)
+          {
+            current_set.cacheSet[j].order++;
+          }
+        }
+      }
+    }
+    else // no-write-allocate
+    {
+      // just write to memory, don't modify cache
+      // Each store accesses at most 4 bytes, so 100 cycles per 4-byte quantity
+      (*total_cycles) += 100;
+    }
+  }
+}
