@@ -211,7 +211,6 @@ int main(int argc, char **argv)
   return 0;
 }
 
-// Helper functions to extract index and tag from address
 u_int32_t getIndex(const u_int32_t address, const int index_bits, const int block_offset_bits)
 {
   u_int32_t index_mask = (1 << index_bits) - 1;
@@ -301,7 +300,7 @@ void handleSingleLoad(u_int32_t set_index, u_int32_t tag,
     {
       // full, need to evict one block based on replacement policy
       int evict_index = 0;
-      if (replacement_policy == "lru")
+      if (replacement_policy == "lru" || replacement_policy == "fifo")
       {
         int max_order = -1;
         for (int i = 0; i < blocks; i++)
@@ -447,7 +446,7 @@ void handleSingleStore(u_int32_t set_index, u_int32_t tag,
       if (is_full)
       {
         int evict_index = 0;
-        if (replacement_policy == "lru")
+        if (replacement_policy == "lru" || replacement_policy == "fifo")
         {
           int max_order = -1;
           for (int i = 0; i < blocks; i++)
